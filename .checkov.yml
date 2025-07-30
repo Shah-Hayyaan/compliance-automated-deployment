@@ -1,0 +1,15 @@
+branch: main
+check:
+  - CKV_AWS_18  # S3 bucket logging
+  - CKV_AWS_21  # S3 bucket versioning
+  - CKV_AWS_144 # S3 bucket encryption
+  - CKV_AWS_145 # S3 bucket KMS encryption
+
+skip-check:
+  - CKV_AWS_61  # Skip RDS encryption for mock
+
+framework:
+  - terraform
+
+output: json
+quiet: false

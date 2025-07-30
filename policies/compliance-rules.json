@@ -1,0 +1,20 @@
+{
+    "compliance_rules": {
+      "encryption": {
+        "required": true,
+        "description": "All storage must be encrypted at rest"
+      },
+      "public_access": {
+        "allowed": false,
+        "description": "No public access to storage resources"
+      },
+      "tags": {
+        "required": ["Environment", "Project", "Owner"],
+        "description": "All resources must have required tags"
+      },
+      "regions": {
+        "allowed": ["us-east-1", "us-west-2", "eu-west-1"],
+        "description": "Only approved regions allowed"
+      }
+    }
+  }

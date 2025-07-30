@@ -1,0 +1,32 @@
+# Terraform files
+*.tfstate
+*.tfstate.*
+*.tfvars.backup
+*.tfplan
+.terraform/
+.terraform.lock.hcl
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Mock files (for this demo)
+mock-*.json
+
+# Security scan results
+tfsec-results.json
+checkov-results.json
+gitleaks-report.json
+
+# Environment files
+.env
+.env.local
