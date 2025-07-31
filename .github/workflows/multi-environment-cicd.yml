@@ -190,102 +190,102 @@ jobs:
             cp $WORKING_DIR/variables.tf $WORKING_DIR/variables.tf.backup
             
             if ! grep -q "variable \"build_number\"" $WORKING_DIR/variables.tf; then
-              cat >> $WORKING_DIR/variables.tf << 'EOF'
-
-variable "build_number" {
-  description = "Build number"
-  type        = string
-  default     = "0"
-}
-EOF
+              cat >> $WORKING_DIR/variables.tf << 'VAREOF'
+          
+          variable "build_number" {
+            description = "Build number"
+            type        = string
+            default     = "0"
+          }
+          VAREOF
             fi
             
             if ! grep -q "variable \"is_production\"" $WORKING_DIR/variables.tf; then
-              cat >> $WORKING_DIR/variables.tf << 'EOF'
-
-variable "is_production" {
-  description = "Is production environment"
-  type        = bool
-  default     = false
-}
-EOF
+              cat >> $WORKING_DIR/variables.tf << 'VAREOF'
+          
+          variable "is_production" {
+            description = "Is production environment"
+            type        = bool
+            default     = false
+          }
+          VAREOF
             fi
             
             if ! grep -q "variable \"deployment_url\"" $WORKING_DIR/variables.tf; then
-              cat >> $WORKING_DIR/variables.tf << EOF
-
-variable "deployment_url" {
-  description = "Environment URL"
-  type        = string
-  default     = "${{ needs.setup.outputs.deployment_url }}"
-}
-EOF
+              cat >> $WORKING_DIR/variables.tf << VAREOF
+          
+          variable "deployment_url" {
+            description = "Environment URL"
+            type        = string
+            default     = "${{ needs.setup.outputs.deployment_url }}"
+          }
+          VAREOF
             fi
             
             echo "✅ Variables merged successfully"
           else
             echo "📝 Creating new variables.tf file..."
             # Create complete variables.tf with environment-specific defaults
-            cat > $WORKING_DIR/variables.tf << EOF
-variable "environment" {
-  description = "Environment name"
-  type        = string
-  default     = "$ENV"
-}
-
-variable "project_name" {
-  description = "Name of the project"
-  type        = string
-  default     = "$ENV-terraform-project"
-}
-
-variable "deployment_url" {
-  description = "Environment URL"
-  type        = string
-  default     = "${{ needs.setup.outputs.deployment_url }}"
-}
-
-variable "commit_sha" {
-  description = "Git commit SHA"
-  type        = string
-  default     = "unknown"
-}
-
-variable "build_number" {
-  description = "Build number"
-  type        = string
-  default     = "0"
-}
-
-variable "bucket_name" {
-  description = "Name of the S3 bucket"
-  type        = string
-  default     = "default-$ENV-bucket"
-}
-
-variable "common_tags" {
-  description = "Tags to apply to all resources"
-  type        = map(string)
-  default     = {
-    "env"         = "$ENV"
-    "team"        = "platform"
-    "managed_by"  = "terraform"
-    "project"     = "compliance-framework"
-  }
-}
-
-variable "region" {
-  description = "AWS Region"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "is_production" {
-  description = "Whether this is a production environment"
-  type        = bool
-  default     = ${{ needs.setup.outputs.is_production }}
-}
-EOF
+            cat > $WORKING_DIR/variables.tf << NEWVAREOF
+          variable "environment" {
+            description = "Environment name"
+            type        = string
+            default     = "$ENV"
+          }
+          
+          variable "project_name" {
+            description = "Name of the project"
+            type        = string
+            default     = "$ENV-terraform-project"
+          }
+          
+          variable "deployment_url" {
+            description = "Environment URL"
+            type        = string
+            default     = "${{ needs.setup.outputs.deployment_url }}"
+          }
+          
+          variable "commit_sha" {
+            description = "Git commit SHA"
+            type        = string
+            default     = "unknown"
+          }
+          
+          variable "build_number" {
+            description = "Build number"
+            type        = string
+            default     = "0"
+          }
+          
+          variable "bucket_name" {
+            description = "Name of the S3 bucket"
+            type        = string
+            default     = "default-$ENV-bucket"
+          }
+          
+          variable "common_tags" {
+            description = "Tags to apply to all resources"
+            type        = map(string)
+            default     = {
+              "env"         = "$ENV"
+              "team"        = "platform"
+              "managed_by"  = "terraform"
+              "project"     = "compliance-framework"
+            }
+          }
+          
+          variable "region" {
+            description = "AWS Region"
+            type        = string
+            default     = "us-east-1"
+          }
+          
+          variable "is_production" {
+            description = "Whether this is a production environment"
+            type        = bool
+            default     = ${{ needs.setup.outputs.is_production }}
+          }
+          NEWVAREOF
           fi
 
           # Create/Update outputs.tf (always overwrite for consistency)
@@ -391,7 +391,7 @@ EOF
           echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
           
           # Create build report
-          cat > build-report.md << EOF
+          cat > build-report.md << BUILDEOF
           # 🏗️ $ENV Build Report
           
           ## 📋 Build Details
@@ -412,7 +412,7 @@ EOF
           - **Working Directory:** ${{ needs.setup.outputs.working_dir }}
           - **Is Production:** ${{ needs.setup.outputs.is_production }}
           - **Requires Approval:** ${{ needs.setup.outputs.requires_approval }}
-          EOF
+          BUILDEOF
           
           # Create mock build artifacts
           mkdir -p build-output
@@ -508,7 +508,7 @@ EOF
           
           cd $WORKING_DIR
           
-          cat > deployment-report.md << EOF
+          cat > deployment-report.md << DEPLOYEOF
           # 🎯 $ENV Deployment Report
           
           ## 📅 Deployment Details
@@ -532,7 +532,7 @@ EOF
           \`\`\`
           
           ## 🎉 $ENV environment ready!
-          EOF
+          DEPLOYEOF
           
           # Generate state summary (sanitized)
           echo "{\"format_version\": \"1.0\", \"terraform_version\": \"${{ env.TERRAFORM_VERSION }}\", \"values\": {\"outputs\": {\"environment\": {\"value\": \"$ENV\"}}}}" > terraform-state-summary.json
@@ -620,7 +620,7 @@ EOF
             
             # Create promotion tracking
             mkdir -p .github/promotions
-            cat > .github/promotions/$SOURCE_ENV-to-$TARGET_ENV-${{ github.run_number }}.json << EOF
+            cat > .github/promotions/$SOURCE_ENV-to-$TARGET_ENV-${{ github.run_number }}.json << PROMOCEOF
             {
               "source_environment": "$SOURCE_ENV",
               "target_environment": "$TARGET_ENV",
@@ -633,7 +633,7 @@ EOF
               "promotion_type": "auto",
               "source_deployment_success": true
             }
-          EOF
+          PROMOCEOF
             
             git add .github/promotions/
             git commit -m "🚀 Auto-promote: $SOURCE_ENV → $TARGET_ENV (build ${{ github.run_number }})"
