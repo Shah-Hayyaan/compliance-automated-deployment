@@ -3,18 +3,63 @@ name: UAT Environment Deploy
 on:
   push:
     branches: [uat]
+  pull_request:
+    branches: [uat]
   workflow_dispatch:
+    inputs:
+      source_build_artifact:
+        description: 'Source build artifact name (from dev)'
+        required: false
+        type: string
+      force_deploy:
+        description: 'Force deployment even if no dev artifacts found'
+        required: false
+        type: boolean
+        default: false
 
 env:
   TF_VAR_environment: uat
   WORKING_DIR: environments/uat
+  TERRAFORM_VERSION: 1.5.0
 
 jobs:
+  setup:
+    name: Setup UAT Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      source_artifact_name: ${{ steps.find_artifacts.outputs.source_artifact_name }}
+      should_use_dev_artifacts: ${{ steps.find_artifacts.outputs.should_use_dev_artifacts }}
+      deployment_strategy: ${{ steps.find_artifacts.outputs.deployment_strategy }}
+    steps:
+      - name: Find source artifacts from dev
+        id: find_artifacts
+        run: |
+          if [[ -n "${{ github.event.inputs.source_build_artifact }}" ]]; then
+            echo "source_artifact_name=${{ github.event.inputs.source_build_artifact }}" >> $GITHUB_OUTPUT
+            echo "should_use_dev_artifacts=true" >> $GITHUB_OUTPUT
+            echo "deployment_strategy=manual_artifact" >> $GITHUB_OUTPUT
+            echo "ℹ️ Using manually specified artifact: ${{ github.event.inputs.source_build_artifact }}"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/uat" ]]; then
+            # This is a push to UAT (likely from a merged dev PR)
+            # Try to find the latest dev build artifact
+            LATEST_DEV_ARTIFACT="build-artifacts-dev-${{ github.sha }}"
+            echo "source_artifact_name=$LATEST_DEV_ARTIFACT" >> $GITHUB_OUTPUT
+            echo "should_use_dev_artifacts=true" >> $GITHUB_OUTPUT
+            echo "deployment_strategy=promoted_from_dev" >> $GITHUB_OUTPUT
+            echo "ℹ️ Using promoted artifact from dev: $LATEST_DEV_ARTIFACT"
+          else
+            echo "should_use_dev_artifacts=false" >> $GITHUB_OUTPUT
+            echo "deployment_strategy=fresh_build" >> $GITHUB_OUTPUT
+            echo "ℹ️ Will create fresh UAT build"
+          fi
+
   validate:
     name: UAT Validation & Security Scan
     runs-on: ubuntu-latest
+    needs: setup
     outputs:
       validation_success: ${{ steps.validate.outputs.validation_success }}
+      build_artifact_name: ${{ steps.artifact_name.outputs.artifact_name }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,7 +67,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.0
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -63,11 +108,33 @@ jobs:
           gitleaks detect --source . --verbose --exit-code 0 || true
           echo "✅ Security scans completed"
 
-      - name: Create UAT Terraform configuration
+      - name: Try to use dev artifacts
+        if: needs.setup.outputs.should_use_dev_artifacts == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.setup.outputs.source_artifact_name }}
+          path: ./dev-artifacts/
+
+      - name: Setup UAT configuration
         run: |
-          echo "=== Creating UAT Terraform Configuration ==="
+          echo "=== Setting up UAT configuration ==="
           mkdir -p ${{ env.WORKING_DIR }}
           
+          # Check if we have dev artifacts to reuse
+          if [[ "${{ needs.setup.outputs.should_use_dev_artifacts }}" == "true" && -d "./dev-artifacts" ]]; then
+            echo "📦 Using configuration from dev artifacts..."
+            cp -r dev-artifacts/environments/dev/* ${{ env.WORKING_DIR }}/ 2>/dev/null || echo "No dev terraform files found"
+            
+            # Update environment-specific values
+            if [[ -f "${{ env.WORKING_DIR }}/variables.tf" ]]; then
+              sed -i 's/default = "dev"/default = "uat"/g' ${{ env.WORKING_DIR }}/variables.tf
+            fi
+          else
+            echo "🏗️ Creating fresh UAT configuration..."
+          fi
+          
+          # Create or update UAT-specific configuration
           cat > ${{ env.WORKING_DIR }}/main.tf << 'EOF'
           terraform {
             required_version = ">= 1.0"
@@ -86,22 +153,28 @@ jobs:
           resource "local_file" "uat_deployment_info" {
             content = jsonencode({
               environment = var.environment
-              timestamp   = timestamp()
+              timestamp   = timestamp() 
               status      = "deployed"
               tier        = "uat"
+              commit_sha  = var.commit_sha
+              build_number = var.build_number
+              deployment_strategy = var.deployment_strategy
             })
             filename = "${path.module}/uat-deployment-info.json"
           }
           
           resource "null_resource" "uat_deployment" {
             provisioner "local-exec" {
-              command = "echo 'UAT deployment for ${var.environment} environment completed at ${timestamp()}'"
+              command = "echo 'UAT deployment completed - Strategy: ${var.deployment_strategy} - Build: ${var.build_number} - Commit: ${var.commit_sha}'"
             }
             
             triggers = {
               environment = var.environment
               timestamp   = timestamp()
               tier        = "uat"
+              commit_sha  = var.commit_sha
+              build_number = var.build_number
+              deployment_strategy = var.deployment_strategy
             }
           }
           EOF
@@ -123,6 +196,24 @@ jobs:
             description = "UAT environment URL"
             type        = string
             default     = "https://uat.yourdomain.com"
+          }
+          
+          variable "commit_sha" {
+            description = "Git commit SHA"
+            type        = string
+            default     = "unknown"
+          }
+          
+          variable "build_number" {
+            description = "Build number"
+            type        = string
+            default     = "0"
+          }
+          
+          variable "deployment_strategy" {
+            description = "Deployment strategy used"
+            type        = string
+            default     = "fresh_build"
           }
           EOF
           
@@ -146,6 +237,21 @@ jobs:
             description = "Deployment status"
             value       = "success"
           }
+          
+          output "commit_sha" {
+            description = "Git commit SHA"
+            value       = var.commit_sha
+          }
+          
+          output "build_number" {
+            description = "Build number"
+            value       = var.build_number
+          }
+          
+          output "deployment_strategy" {
+            description = "Deployment strategy used"
+            value       = var.deployment_strategy
+          }
           EOF
           
           echo "Created UAT Terraform configuration files"
@@ -165,7 +271,11 @@ jobs:
           if terraform validate -no-color; then
             echo "✅ Terraform validation successful"
             echo "validation_success=true" >> $GITHUB_OUTPUT
-            terraform plan -out=tfplan -detailed-exitcode -no-color -var="environment=uat" || echo "dummy-plan" > tfplan
+            terraform plan -out=tfplan -detailed-exitcode -no-color \
+              -var="environment=uat" \
+              -var="commit_sha=${{ github.sha }}" \
+              -var="build_number=${{ github.run_number }}" \
+              -var="deployment_strategy=${{ needs.setup.outputs.deployment_strategy }}" || echo "dummy-plan" > tfplan
             echo "✅ Terraform workflow completed"
           else
             echo "❌ Terraform validation failed"
@@ -192,27 +302,51 @@ jobs:
           echo "- ✅ Policy compliance checked" >> security-summary.md
           echo "## 🎯 Environment: UAT" >> security-summary.md
           echo "## 🔗 Commit: ${{ github.sha }}" >> security-summary.md
+          echo "## 📦 Strategy: ${{ needs.setup.outputs.deployment_strategy }}" >> security-summary.md
+
+      - name: Generate build metadata
+        id: artifact_name
+        run: |
+          BUILD_ARTIFACT_NAME="build-artifacts-uat-${{ github.sha }}-${{ github.run_number }}"
+          echo "artifact_name=$BUILD_ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          
+          echo "# 🏗️ UAT Build Report" > build-report.md
+          echo "## 📋 Build Details" >> build-report.md
+          echo "- **Environment:** uat" >> build-report.md
+          echo "- **Commit SHA:** ${{ github.sha }}" >> build-report.md
+          echo "- **Build Number:** ${{ github.run_number }}" >> build-report.md
+          echo "- **Triggered by:** ${{ github.actor }}" >> build-report.md
+          echo "- **Timestamp:** $(date)" >> build-report.md
+          echo "- **Validation Status:** ${{ steps.validate.outputs.validation_success }}" >> build-report.md
+          echo "- **Deployment Strategy:** ${{ needs.setup.outputs.deployment_strategy }}" >> build-report.md
+          echo "## 🔗 Artifact Name" >> build-report.md
+          echo "\`$BUILD_ARTIFACT_NAME\`" >> build-report.md
 
       - name: Upload UAT validation artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: uat-validation-results
+          name: ${{ steps.artifact_name.outputs.artifact_name }}
           path: |
+            ${{ env.WORKING_DIR }}/*.tf
+            ${{ env.WORKING_DIR }}/tfplan
+            ${{ env.WORKING_DIR }}/.terraform.lock.hcl
             tfsec-uat.json
             checkov-uat.json
             security-summary.md
-            ${{ env.WORKING_DIR }}/tfplan
-            ${{ env.WORKING_DIR }}/*.tf
+            build-report.md
           retention-days: 30
 
   deploy:
     name: Deploy to UAT Environment
     runs-on: ubuntu-latest
-    needs: validate
-    if: github.ref == 'refs/heads/uat'
+    needs: [setup, validate]
+    if: github.ref == 'refs/heads/uat' && needs.validate.outputs.validation_success == 'true'
     environment:
       name: uat
       url: https://uat.yourdomain.com
+    outputs:
+      deployment_success: ${{ steps.deploy.outputs.deployment_success }}
+      deployment_artifact_name: ${{ steps.deploy_artifact.outputs.deployment_artifact_name }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -220,26 +354,32 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.0
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Download validation artifacts
         uses: actions/download-artifact@v4
         with:
-          name: uat-validation-results
+          name: ${{ needs.validate.outputs.build_artifact_name }}
           path: ${{ env.WORKING_DIR }}
 
       - name: Deploy UAT infrastructure
+        id: deploy
         run: |
           echo "🚀 Deploying to UAT environment..."
           terraform init -no-color
           
-          if [ -f "tfplan" ] && [ "$(cat tfplan)" != "dummy-plan" ]; then
-            terraform apply -auto-approve tfplan -no-color
+          if terraform apply -auto-approve -no-color \
+            -var="environment=uat" \
+            -var="commit_sha=${{ github.sha }}" \
+            -var="build_number=${{ github.run_number }}" \
+            -var="deployment_strategy=${{ needs.setup.outputs.deployment_strategy }}"; then
+            echo "deployment_success=true" >> $GITHUB_OUTPUT
+            echo "✅ UAT deployment completed successfully"
           else
-            echo "Applying with auto-approve for UAT..."
-            terraform apply -auto-approve -no-color -var="environment=uat" || echo "Mock UAT deployment completed"
+            echo "deployment_success=false" >> $GITHUB_OUTPUT
+            echo "❌ UAT deployment failed"
+            exit 1
           fi
-          echo "✅ UAT deployment completed successfully"
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: UAT post-deployment validation
@@ -250,13 +390,19 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Generate comprehensive UAT report
+        id: deploy_artifact
         run: |
+          DEPLOYMENT_ARTIFACT_NAME="deployment-artifacts-uat-${{ github.sha }}-${{ github.run_number }}"
+          echo "deployment_artifact_name=$DEPLOYMENT_ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          
           echo "# 🎯 UAT Deployment Report" > uat-deployment-report.md
           echo "## 📅 Deployment Date: $(date)" >> uat-deployment-report.md
           echo "## 🔗 Commit SHA: ${{ github.sha }}" >> uat-deployment-report.md
+          echo "## 🏗️ Build Number: ${{ github.run_number }}" >> uat-deployment-report.md
           echo "## 👤 Deployed by: ${{ github.actor }}" >> uat-deployment-report.md
           echo "## 🌍 Environment: UAT" >> uat-deployment-report.md
           echo "## 📊 Deployment Status: ✅ SUCCESS" >> uat-deployment-report.md
+          echo "## 📦 Strategy: ${{ needs.setup.outputs.deployment_strategy }}" >> uat-deployment-report.md
           echo "## 🔧 Infrastructure Changes:" >> uat-deployment-report.md
           
           terraform show -json > uat-terraform-state.json 2>/dev/null || echo '{"uat": "mock-state"}' > uat-terraform-state.json
@@ -266,6 +412,7 @@ jobs:
           echo "- ✅ Infrastructure deployed successfully" >> uat-deployment-report.md
           echo "## 🎉 UAT environment ready for testing!" >> uat-deployment-report.md
           echo "## 🔗 UAT URL: https://uat.yourdomain.com" >> uat-deployment-report.md
+          echo "## 🚀 Ready for Production Promotion" >> uat-deployment-report.md
           
           echo "## 📋 Terraform Outputs:" >> uat-deployment-report.md
           echo '```json' >> uat-deployment-report.md
@@ -276,7 +423,7 @@ jobs:
       - name: Upload UAT deployment artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: uat-deployment-artifacts
+          name: ${{ steps.deploy_artifact.outputs.deployment_artifact_name }}
           path: |
             ${{ env.WORKING_DIR }}/uat-deployment-report.md
             ${{ env.WORKING_DIR }}/uat-terraform-state.json
@@ -284,21 +431,148 @@ jobs:
             ${{ env.WORKING_DIR }}/uat-deployment-info.json
           retention-days: 90
 
+  create-production-pr:
+    name: Create Production Promotion PR
+    runs-on: ubuntu-latest
+    needs: [setup, validate, deploy]
+    if: success() && github.ref == 'refs/heads/uat' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create promotion PR to Production
+        run: |
+          # Configure git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if PR already exists
+          EXISTING_PR=$(gh pr list --base main --head uat --json number --jq '.[0].number' 2>/dev/null || echo "")
+          
+          if [[ -z "$EXISTING_PR" ]]; then
+            # Create PR
+            gh pr create \
+              --base main \
+              --head uat \
+              --title "🚀 Promote UAT to Production - Build #${{ github.run_number }}" \
+              --body "## 🎯 Production Promotion Request
+
+            ### 📋 Details
+            - **Source Environment:** uat
+            - **Target Environment:** production
+            - **Commit SHA:** ${{ github.sha }}
+            - **Build Number:** ${{ github.run_number }}
+            - **Triggered by:** ${{ github.actor }}
+            - **Timestamp:** $(date)
+            - **Deployment Strategy:** ${{ needs.setup.outputs.deployment_strategy }}
+
+            ### 🏗️ Build Artifacts
+            - **Build Artifact:** ${{ needs.validate.outputs.build_artifact_name }}
+            - **Deployment Artifact:** ${{ needs.deploy.outputs.deployment_artifact_name }}
+
+            ### ✅ UAT Environment Status
+            - Validation: ✅ Successful
+            - Deployment: ✅ Successful
+            - Security Scans: ✅ Completed
+            - UAT Testing: 🔄 Ready for Review
+            - Ready for Production: ⚠️ Pending Approval
+
+            ### 🔍 What's Changed
+            This promotion includes all changes from the UAT branch that have been successfully validated and deployed to the UAT environment.
+
+            ### 🚨 Production Deployment Checklist
+            - [ ] UAT testing completed successfully
+            - [ ] Security review approved
+            - [ ] Performance testing passed
+            - [ ] Documentation updated
+            - [ ] Rollback plan confirmed
+            - [ ] Stakeholder approval obtained
+
+            ### 📝 Manual Review Required
+            **⚠️ PRODUCTION DEPLOYMENT - REQUIRES MANUAL APPROVAL**
+            
+            Please thoroughly review:
+            1. All UAT test results
+            2. Security scan reports
+            3. Performance metrics
+            4. Change impact assessment
+            
+            Only approve this PR after all production readiness criteria are met.
+
+            ---
+            *This PR was automatically created by the UAT CI/CD pipeline.*"
+            
+            echo "✅ Created promotion PR to Production"
+          else
+            echo "ℹ️ PR already exists: #$EXISTING_PR"
+            
+            # Update existing PR with new commit info
+            gh pr edit $EXISTING_PR \
+              --title "🚀 Promote UAT to Production - Build #${{ github.run_number }}" \
+              --body "## 🎯 Production Promotion Request (Updated)
+
+            ### 📋 Details
+            - **Source Environment:** uat
+            - **Target Environment:** production
+            - **Latest Commit SHA:** ${{ github.sha }}
+            - **Latest Build Number:** ${{ github.run_number }}
+            - **Last Updated by:** ${{ github.actor }}
+            - **Last Updated:** $(date)
+            - **Deployment Strategy:** ${{ needs.setup.outputs.deployment_strategy }}
+
+            ### 🏗️ Latest Build Artifacts
+            - **Build Artifact:** ${{ needs.validate.outputs.build_artifact_name }}
+            - **Deployment Artifact:** ${{ needs.deploy.outputs.deployment_artifact_name }}
+
+            ### ✅ UAT Environment Status
+            - Validation: ✅ Successful
+            - Deployment: ✅ Successful
+            - Security Scans: ✅ Completed
+            - UAT Testing: 🔄 Ready for Review
+            - Ready for Production: ⚠️ Pending Approval
+
+            ### 🚨 Production Deployment Checklist
+            - [ ] UAT testing completed successfully
+            - [ ] Security review approved
+            - [ ] Performance testing passed
+            - [ ] Documentation updated
+            - [ ] Rollback plan confirmed
+            - [ ] Stakeholder approval obtained
+
+            ---
+            *This PR was automatically updated by the UAT CI/CD pipeline.*"
+            
+            echo "✅ Updated existing promotion PR to Production"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   cleanup:
     name: Cleanup UAT Artifacts
     runs-on: ubuntu-latest
-    needs: [validate, deploy]
+    needs: [setup, validate, deploy, create-production-pr]
     if: always()
     steps:
-      - name: Clean up temporary artifacts
+      - name: Pipeline Summary
         run: |
-          echo "UAT Workflow completed successfully"
-          echo "Validation status: ${{ needs.validate.result }}"
-          echo "Deployment status: ${{ needs.deploy.result }}"
-          echo "Validation success: ${{ needs.validate.outputs.validation_success }}"
-          echo ""
-          echo "🎯 UAT environment deployment summary:"
-          echo "- Security scans completed"
-          echo "- Infrastructure validated"
-          echo "- Deployment successful"
-          echo "- UAT ready for testing"
+          echo "## 🎯 UAT Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** uat" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Number:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Strategy:** ${{ needs.setup.outputs.deployment_strategy }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Setup:** ${{ needs.setup.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation:** ${{ needs.validate.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment:** ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Production PR:** ${{ needs.create-production-pr.result }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "## 🚀 Ready for Production" >> $GITHUB_STEP_SUMMARY
+            echo "The build has been successfully deployed to UAT and is ready for production promotion." >> $GITHUB_STEP_SUMMARY
+            echo "### 📝 Next Steps:" >> $GITHUB_STEP_SUMMARY
+            echo "1. Complete UAT testing" >> $GITHUB_STEP_SUMMARY
+            echo "2. Review security scans" >> $GITHUB_STEP_SUMMARY
+            echo "3. Approve production promotion PR" >> $GITHUB_STEP_SUMMARY
+          fi
