@@ -47,7 +47,7 @@ jobs:
             ENV="dev"
           elif [[ "${{ github.ref }}" == "refs/heads/uat" ]]; then
             ENV="uat"
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          elif [[ "${{ github.ref }}" == "refs/heads/prod" ]]; then
             ENV="prod"
           else
             ENV="dev"  # default fallback
@@ -582,7 +582,7 @@ EOF
               ;;
             "uat")
               TARGET_ENV="prod"
-              TARGET_BRANCH="main"
+              TARGET_BRANCH="prod"
               ;;
             *)
               echo "No promotion needed for $SOURCE_ENV"
