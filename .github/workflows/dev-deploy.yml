@@ -10,6 +10,7 @@ on:
 env:
   TF_VAR_environment: dev
   WORKING_DIR: environments/dev
+  TERRAFORM_VERSION: 1.5.0
 
 jobs:
   validate:
@@ -17,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       validation_success: ${{ steps.validate.outputs.validation_success }}
+      build_artifact_name: ${{ steps.artifact_name.outputs.artifact_name }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -24,7 +26,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.0
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -92,18 +94,22 @@ jobs:
               environment = var.environment
               timestamp   = timestamp()
               status      = "deployed"
+              commit_sha  = var.commit_sha
+              build_number = var.build_number
             })
             filename = "${path.module}/deployment-info.json"
           }
           
           resource "null_resource" "dummy_deployment" {
             provisioner "local-exec" {
-              command = "echo 'Dummy deployment for ${var.environment} environment completed'"
+              command = "echo 'Deployment for ${var.environment} environment completed - Build: ${var.build_number} - Commit: ${var.commit_sha}'"
             }
             
             triggers = {
               environment = var.environment
               timestamp   = timestamp()
+              commit_sha  = var.commit_sha
+              build_number = var.build_number
             }
           }
           EOF
@@ -118,7 +124,19 @@ jobs:
           variable "project_name" {
             description = "Name of the project"
             type        = string
-            default     = "dummy-terraform-project"
+            default     = "connected-terraform-project"
+          }
+          
+          variable "commit_sha" {
+            description = "Git commit SHA"
+            type        = string
+            default     = "unknown"
+          }
+          
+          variable "build_number" {
+            description = "Build number"
+            type        = string
+            default     = "0"
           }
           EOF
           
@@ -131,6 +149,16 @@ jobs:
           output "deployment_timestamp" {
             description = "Timestamp of deployment"
             value       = timestamp()
+          }
+          
+          output "commit_sha" {
+            description = "Git commit SHA"
+            value       = var.commit_sha
+          }
+          
+          output "build_number" {
+            description = "Build number"
+            value       = var.build_number
           }
           EOF
           
@@ -154,8 +182,10 @@ jobs:
           echo "Validating Terraform configuration..."
           if terraform validate -no-color; then
             echo "validation_success=true" >> $GITHUB_OUTPUT
+            echo "✅ Terraform validation successful"
           else
             echo "validation_success=false" >> $GITHUB_OUTPUT
+            echo "❌ Terraform validation failed"
           fi
         working-directory: ${{ env.WORKING_DIR }}
 
@@ -169,40 +199,56 @@ jobs:
           echo "Running Checkov security scan..."
           checkov -d ${{ env.WORKING_DIR }} --framework terraform --output json --output-file checkov-results.json --soft-fail || true
 
-      - name: Upload security scan results
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-scan-results-dev
-          path: |
-            tfsec-results.json
-            checkov-results.json
-          retention-days: 30
-
       - name: Terraform Plan
         run: |
           echo "Creating Terraform execution plan..."
-          terraform plan -out=tfplan -detailed-exitcode -no-color -var="environment=dev" || echo "dummy-plan" > tfplan
+          terraform plan -out=tfplan -detailed-exitcode -no-color \
+            -var="environment=dev" \
+            -var="commit_sha=${{ github.sha }}" \
+            -var="build_number=${{ github.run_number }}" || echo "dummy-plan" > tfplan
         working-directory: ${{ env.WORKING_DIR }}
 
-      - name: Upload plan
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-plan-dev
-          path: ${{ env.WORKING_DIR }}/tfplan
-          retention-days: 30
+      - name: Generate build metadata
+        id: artifact_name
+        run: |
+          BUILD_ARTIFACT_NAME="build-artifacts-dev-${{ github.sha }}-${{ github.run_number }}"
+          echo "artifact_name=$BUILD_ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          
+          echo "# 🏗️ Dev Build Report" > build-report.md
+          echo "## 📋 Build Details" >> build-report.md
+          echo "- **Environment:** dev" >> build-report.md
+          echo "- **Commit SHA:** ${{ github.sha }}" >> build-report.md
+          echo "- **Build Number:** ${{ github.run_number }}" >> build-report.md
+          echo "- **Triggered by:** ${{ github.actor }}" >> build-report.md
+          echo "- **Timestamp:** $(date)" >> build-report.md
+          echo "- **Validation Status:** ${{ steps.validate.outputs.validation_success }}" >> build-report.md
+          echo "## 🔗 Artifact Name" >> build-report.md
+          echo "\`$BUILD_ARTIFACT_NAME\`" >> build-report.md
 
-      - name: Upload Terraform files
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-files-dev
-          path: ${{ env.WORKING_DIR }}/*.tf
-          retention-days: 7
+          name: ${{ steps.artifact_name.outputs.artifact_name }}
+          path: |
+            ${{ env.WORKING_DIR }}/*.tf
+            ${{ env.WORKING_DIR }}/tfplan
+            ${{ env.WORKING_DIR }}/.terraform.lock.hcl
+            tfsec-results.json
+            checkov-results.json
+            build-report.md
+          retention-days: 30
 
   deploy:
     name: Deploy to Dev
     runs-on: ubuntu-latest
     needs: validate
-    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push' && needs.validate.outputs.validation_success == 'true'
+    environment: 
+      name: dev
+      url: https://dev.yourdomain.com
+    outputs:
+      deployment_success: ${{ steps.deploy.outputs.deployment_success }}
+      deployment_artifact_name: ${{ steps.deploy_artifact.outputs.deployment_artifact_name }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -210,18 +256,12 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.0
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: Download plan
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: terraform-plan-dev
-          path: ${{ env.WORKING_DIR }}
-
-      - name: Download Terraform files
-        uses: actions/download-artifact@v4
-        with:
-          name: terraform-files-dev
+          name: ${{ needs.validate.outputs.build_artifact_name }}
           path: ${{ env.WORKING_DIR }}
 
       - name: Terraform Init
@@ -231,19 +271,39 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Terraform Apply
+        id: deploy
         run: |
           echo "Applying Terraform changes..."
-          terraform apply -auto-approve -no-color -var="environment=dev" || echo "Mock deployment completed"
+          if terraform apply -auto-approve -no-color \
+            -var="environment=dev" \
+            -var="commit_sha=${{ github.sha }}" \
+            -var="build_number=${{ github.run_number }}"; then
+            echo "deployment_success=true" >> $GITHUB_OUTPUT
+            echo "✅ Deployment successful"
+          else
+            echo "deployment_success=false" >> $GITHUB_OUTPUT
+            echo "❌ Deployment failed"
+            exit 1
+          fi
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Generate deployment report
+        id: deploy_artifact
         run: |
-          echo "# Dev Deployment Report" > deployment-report.md
-          echo "## Timestamp: $(date)" >> deployment-report.md
-          echo "## Commit: ${{ github.sha }}" >> deployment-report.md
-          echo "## Triggered by: ${{ github.actor }}" >> deployment-report.md
-          echo "## Environment: Development" >> deployment-report.md
-          echo "## Status: Deployed Successfully" >> deployment-report.md
+          DEPLOYMENT_ARTIFACT_NAME="deployment-artifacts-dev-${{ github.sha }}-${{ github.run_number }}"
+          echo "deployment_artifact_name=$DEPLOYMENT_ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          
+          echo "# 🚀 Dev Deployment Report" > deployment-report.md
+          echo "## 📋 Deployment Details" >> deployment-report.md
+          echo "- **Environment:** dev" >> deployment-report.md
+          echo "- **Timestamp:** $(date)" >> deployment-report.md
+          echo "- **Commit SHA:** ${{ github.sha }}" >> deployment-report.md
+          echo "- **Build Number:** ${{ github.run_number }}" >> deployment-report.md
+          echo "- **Triggered by:** ${{ github.actor }}" >> deployment-report.md
+          echo "- **Status:** ✅ Deployed Successfully" >> deployment-report.md
+          echo "- **URL:** https://dev.yourdomain.com" >> deployment-report.md
+          echo "## 🎯 Ready for UAT Promotion" >> deployment-report.md
+          echo "This build is ready to be promoted to UAT environment." >> deployment-report.md
           
           terraform show -json > terraform-state.json 2>/dev/null || echo '{"mock": "state"}' > terraform-state.json
           terraform output -json > tf-outputs.json 2>/dev/null || echo '{"environment": {"value": "dev"}}' > tf-outputs.json
@@ -252,21 +312,122 @@ jobs:
       - name: Upload deployment artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: deployment-artifacts-dev
+          name: ${{ steps.deploy_artifact.outputs.deployment_artifact_name }}
           path: |
             ${{ env.WORKING_DIR }}/deployment-report.md
             ${{ env.WORKING_DIR }}/terraform-state.json
             ${{ env.WORKING_DIR }}/tf-outputs.json
+            ${{ env.WORKING_DIR }}/deployment-info.json
           retention-days: 90
+
+  create-promotion-pr:
+    name: Create UAT Promotion PR
+    runs-on: ubuntu-latest
+    needs: [validate, deploy]
+    if: success() && github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create promotion PR to UAT
+        run: |
+          # Configure git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if PR already exists
+          EXISTING_PR=$(gh pr list --base uat --head dev --json number --jq '.[0].number' 2>/dev/null || echo "")
+          
+          if [[ -z "$EXISTING_PR" ]]; then
+            # Create PR
+            gh pr create \
+              --base uat \
+              --head dev \
+              --title "🚀 Promote Dev to UAT - Build #${{ github.run_number }}" \
+              --body "## 🎯 Automated Promotion Request
+
+            ### 📋 Details
+            - **Source Environment:** dev
+            - **Target Environment:** uat  
+            - **Commit SHA:** ${{ github.sha }}
+            - **Build Number:** ${{ github.run_number }}
+            - **Triggered by:** ${{ github.actor }}
+            - **Timestamp:** $(date)
+
+            ### 🏗️ Build Artifacts
+            - **Build Artifact:** ${{ needs.validate.outputs.build_artifact_name }}
+            - **Deployment Artifact:** ${{ needs.deploy.outputs.deployment_artifact_name }}
+
+            ### ✅ Dev Environment Status
+            - Validation: ✅ Successful
+            - Deployment: ✅ Successful  
+            - Security Scans: ✅ Completed
+            - Ready for UAT: ✅ Yes
+
+            ### 🔍 What's Changed
+            This promotion includes all changes from the dev branch that have been successfully validated and deployed.
+
+            ### 📝 Manual Review Required
+            Please review the changes and approve this PR to deploy to UAT environment.
+
+            ---
+            *This PR was automatically created by the Dev CI/CD pipeline.*"
+            
+            echo "✅ Created promotion PR to UAT"
+          else
+            echo "ℹ️ PR already exists: #$EXISTING_PR"
+            
+            # Update existing PR with new commit info
+            gh pr edit $EXISTING_PR \
+              --title "🚀 Promote Dev to UAT - Build #${{ github.run_number }}" \
+              --body "## 🎯 Automated Promotion Request (Updated)
+
+            ### 📋 Details  
+            - **Source Environment:** dev
+            - **Target Environment:** uat
+            - **Latest Commit SHA:** ${{ github.sha }}
+            - **Latest Build Number:** ${{ github.run_number }}
+            - **Last Updated by:** ${{ github.actor }}
+            - **Last Updated:** $(date)
+
+            ### 🏗️ Latest Build Artifacts
+            - **Build Artifact:** ${{ needs.validate.outputs.build_artifact_name }}
+            - **Deployment Artifact:** ${{ needs.deploy.outputs.deployment_artifact_name }}
+
+            ### ✅ Dev Environment Status
+            - Validation: ✅ Successful
+            - Deployment: ✅ Successful
+            - Security Scans: ✅ Completed  
+            - Ready for UAT: ✅ Yes
+
+            ---
+            *This PR was automatically updated by the Dev CI/CD pipeline.*"
+            
+            echo "✅ Updated existing promotion PR to UAT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   cleanup:
     name: Cleanup Artifacts
     runs-on: ubuntu-latest
-    needs: [validate, deploy]
+    needs: [validate, deploy, create-promotion-pr]
     if: always()
     steps:
-      - name: Clean up temporary artifacts
+      - name: Pipeline Summary
         run: |
-          echo "Workflow completed successfully"
-          echo "Validation status: ${{ needs.validate.result }}"
-          echo "Deployment status: ${{ needs.deploy.result }}"
+          echo "## 🏗️ Dev Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** dev" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Number:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit SHA:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Validation:** ${{ needs.validate.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment:** ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Promotion PR:** ${{ needs.create-promotion-pr.result }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "## 🎉 Ready for UAT" >> $GITHUB_STEP_SUMMARY
+            echo "The build has been successfully deployed to dev and is ready for UAT promotion." >> $GITHUB_STEP_SUMMARY
+          fi
