@@ -138,7 +138,7 @@ jobs:
           fi
           
           # Create/Update main.tf (always overwrite for consistency)
-          cat > $WORKING_DIR/main.tf << EOF
+          cat > $WORKING_DIR/main.tf << 'EOF'
           terraform {
             required_version = ">= 1.0"
             required_providers {
@@ -167,12 +167,12 @@ jobs:
               tags               = var.common_tags
               is_production      = var.is_production
             })
-            filename = "\${path.module}/$ENV-deployment-info.json"
+            filename = "${path.module}/$ENV-deployment-info.json"
           }
 
           resource "null_resource" "deployment" {
             provisioner "local-exec" {
-              command = "echo '$ENV deployment completed - Build: \${var.build_number} - Commit: \${var.commit_sha}'"
+              command = "echo '$ENV deployment completed - Build: ${var.build_number} - Commit: ${var.commit_sha}'"
             }
             
             triggers = {
@@ -185,45 +185,28 @@ jobs:
           EOF
 
           # Check if variables.tf exists and merge with existing or create new
-if [[ -f "$WORKING_DIR/variables.tf" ]]; then
- echo "📝 Found existing variables.tf, merging with new variables..."
- cp $WORKING_DIR/variables.tf $WORKING_DIR/variables.tf.backup
- if ! grep -q "variable \"build_number\"" $WORKING_DIR/variables.tf; then
-   cat >> $WORKING_DIR/variables.tf << 'EOF'
+          if [[ -f "$WORKING_DIR/variables.tf" ]]; then
+            echo "📝 Found existing variables.tf, merging with new variables..."
+            cp $WORKING_DIR/variables.tf $WORKING_DIR/variables.tf.backup
+            
+            if ! grep -q "variable \"build_number\"" $WORKING_DIR/variables.tf; then
+              cat >> $WORKING_DIR/variables.tf << 'EOF'
 
 variable "build_number" {
- description = "Build number"
- type        = string
- default     = "0"
+  description = "Build number"
+  type        = string
+  default     = "0"
 }
 EOF
- fi
- if ! grep -q "variable \"is_production\"" $WORKING_DIR/variables.tf; then
-   cat >> $WORKING_DIR/variables.tf << 'EOF'
+            fi
+            
+            if ! grep -q "variable \"is_production\"" $WORKING_DIR/variables.tf; then
+              cat >> $WORKING_DIR/variables.tf << 'EOF'
 
 variable "is_production" {
- description = "Is production environment"
- type        = bool
- default     = false
-}
-EOF
- fi
-fi
-if ! grep -q "variable \"is_production\"" $WORKING_DIR/variables.tf; then
- cat >> $WORKING_DIR/variables.tf << EOF
-
-variable "is_production" {
- description = "Is production environment"
- type        = bool
- default     = false
-}
-EOF
-fi
-              
-variable "is_production" {
-  description = "Whether this is a production environment"
+  description = "Is production environment"
   type        = bool
-  default     = ${{ needs.setup.outputs.is_production }}
+  default     = false
 }
 EOF
             fi
@@ -306,7 +289,7 @@ EOF
           fi
 
           # Create/Update outputs.tf (always overwrite for consistency)
-          cat > $WORKING_DIR/outputs.tf << EOF
+          cat > $WORKING_DIR/outputs.tf << 'EOF'
           output "environment" {
             description = "Current environment"
             value       = var.environment
