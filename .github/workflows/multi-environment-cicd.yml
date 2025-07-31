@@ -130,7 +130,14 @@ jobs:
           echo "🏗️ Setting up Terraform configuration for $ENV..."
           mkdir -p $WORKING_DIR
           
-          # Create main.tf with environment-specific resources
+          # Check if we have existing Terraform files
+          if [[ -f "$WORKING_DIR/main.tf" ]] || [[ -f "$WORKING_DIR/variables.tf" ]] || [[ -f "$WORKING_DIR/outputs.tf" ]]; then
+            echo "📋 Found existing Terraform configuration, will merge/update..."
+          else
+            echo "🆕 Creating new Terraform configuration..."
+          fi
+          
+          # Create/Update main.tf (always overwrite for consistency)
           cat > $WORKING_DIR/main.tf << EOF
           terraform {
             required_version = ">= 1.0"
@@ -177,69 +184,113 @@ jobs:
           }
           EOF
 
-          # Create variables.tf with environment-specific defaults
-          cat > $WORKING_DIR/variables.tf << EOF
-          variable "environment" {
-            description = "Environment name"
-            type        = string
-            default     = "$ENV"
-          }
+          # Check if variables.tf exists and merge with existing or create new
+          if [[ -f "$WORKING_DIR/variables.tf" ]]; then
+            echo "📝 Found existing variables.tf, merging with new variables..."
+            # Backup existing file
+            cp $WORKING_DIR/variables.tf $WORKING_DIR/variables.tf.backup
+            
+            # Append missing variables if they don't exist
+            if ! grep -q "variable \"build_number\"" $WORKING_DIR/variables.tf; then
+              cat >> $WORKING_DIR/variables.tf << EOF
 
-          variable "project_name" {
-            description = "Name of the project"
-            type        = string
-            default     = "$ENV-terraform-project"
-          }
+variable "build_number" {
+  description = "Build number"
+  type        = string
+  default     = "0"
+}
+EOF
+            fi
+            
+            if ! grep -q "variable \"is_production\"" $WORKING_DIR/variables.tf; then
+              cat >> $WORKING_DIR/variables.tf << EOF
 
-          variable "deployment_url" {
-            description = "Environment URL"
-            type        = string
-            default     = "${{ needs.setup.outputs.deployment_url }}"
-          }
+variable "is_production" {
+  description = "Whether this is a production environment"
+  type        = bool
+  default     = ${{ needs.setup.outputs.is_production }}
+}
+EOF
+            fi
+            
+            if ! grep -q "variable \"deployment_url\"" $WORKING_DIR/variables.tf; then
+              cat >> $WORKING_DIR/variables.tf << EOF
 
-          variable "commit_sha" {
-            description = "Git commit SHA"
-            type        = string
-            default     = "unknown"
-          }
+variable "deployment_url" {
+  description = "Environment URL"
+  type        = string
+  default     = "${{ needs.setup.outputs.deployment_url }}"
+}
+EOF
+            fi
+            
+            echo "✅ Variables merged successfully"
+          else
+            echo "📝 Creating new variables.tf file..."
+            # Create complete variables.tf with environment-specific defaults
+            cat > $WORKING_DIR/variables.tf << EOF
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "$ENV"
+}
 
-          variable "build_number" {
-            description = "Build number"
-            type        = string
-            default     = "0"
-          }
+variable "project_name" {
+  description = "Name of the project"
+  type        = string
+  default     = "$ENV-terraform-project"
+}
 
-          variable "bucket_name" {
-            description = "Name of the S3 bucket"
-            type        = string
-            default     = "default-$ENV-bucket"
-          }
+variable "deployment_url" {
+  description = "Environment URL"
+  type        = string
+  default     = "${{ needs.setup.outputs.deployment_url }}"
+}
 
-          variable "common_tags" {
-            description = "Tags to apply to all resources"
-            type        = map(string)
-            default     = {
-              "env"         = "$ENV"
-              "team"        = "platform"
-              "managed_by"  = "terraform"
-              "project"     = "compliance-framework"
-            }
-          }
+variable "commit_sha" {
+  description = "Git commit SHA"
+  type        = string
+  default     = "unknown"
+}
 
-          variable "region" {
-            description = "AWS Region"
-            type        = string
-            default     = "us-east-1"
-          }
+variable "build_number" {
+  description = "Build number"
+  type        = string
+  default     = "0"
+}
 
-          variable "is_production" {
-            description = "Whether this is a production environment"
-            type        = bool
-            default     = ${{ needs.setup.outputs.is_production }}
-          }
-          EOF
+variable "bucket_name" {
+  description = "Name of the S3 bucket"
+  type        = string
+  default     = "default-$ENV-bucket"
+}
 
-          # Create outputs.tf
+variable "common_tags" {
+  description = "Tags to apply to all resources"
+  type        = map(string)
+  default     = {
+    "env"         = "$ENV"
+    "team"        = "platform"
+    "managed_by"  = "terraform"
+    "project"     = "compliance-framework"
+  }
+}
+
+variable "region" {
+  description = "AWS Region"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "is_production" {
+  description = "Whether this is a production environment"
+  type        = bool
+  default     = ${{ needs.setup.outputs.is_production }}
+}
+EOF
+          fi
+
+          # Create/Update outputs.tf (always overwrite for consistency)
           cat > $WORKING_DIR/outputs.tf << EOF
           output "environment" {
             description = "Current environment"
