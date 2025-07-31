@@ -38,3 +38,9 @@ variable "public_access_block" {
   type        = bool
   default     = true
 }
+
+variable "build_number" {
+  description = "Build number for deployment tracking"
+  type        = string
+  default     = ""
+}
