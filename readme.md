@@ -2,7 +2,7 @@
 
 A complete CI/CD pipeline with security gates and compliance automation for Terraform infrastructure.
 
-## 🎯 Features
+## Features
 
 - **Multi-Environment Support**: Dev, UAT, Production environments
 - **Security Gates**: tfsec, checkov, gitleaks integration
