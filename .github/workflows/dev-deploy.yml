@@ -62,27 +62,11 @@ jobs:
           echo "Running gitleaks secret detection..."
           gitleaks detect --source . --verbose --exit-code 0 || true
 
-      - name: Debug and Fix Terraform files
+      - name: Create working directory
         run: |
-          echo "=== Debugging Terraform Configuration ==="
+          echo "=== Setting up working directory ==="
           echo "Working directory: ${{ env.WORKING_DIR }}"
           mkdir -p ${{ env.WORKING_DIR }}
-          
-          echo "=== Creating fixed outputs.tf ==="
-          cat > ${{ env.WORKING_DIR }}/outputs.tf << 'EOF'
-          output "environment" {
-            description = "Current environment"
-            value       = var.environment
-          }
-          
-          output "deployment_timestamp" {
-            description = "Timestamp of deployment"
-            value       = timestamp()
-          }
-          EOF
-          
-          echo "Fixed outputs.tf content:"
-          cat ${{ env.WORKING_DIR }}/outputs.tf
 
       - name: Create minimal Terraform configuration
         run: |
@@ -135,6 +119,18 @@ jobs:
             description = "Name of the project"
             type        = string
             default     = "dummy-terraform-project"
+          }
+          EOF
+          
+          cat > ${{ env.WORKING_DIR }}/outputs.tf << 'EOF'
+          output "environment" {
+            description = "Current environment"
+            value       = var.environment
+          }
+          
+          output "deployment_timestamp" {
+            description = "Timestamp of deployment"
+            value       = timestamp()
           }
           EOF
           
