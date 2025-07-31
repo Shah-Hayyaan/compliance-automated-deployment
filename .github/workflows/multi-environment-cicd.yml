@@ -130,14 +130,9 @@ jobs:
           echo "🏗️ Setting up Terraform configuration for $ENV..."
           mkdir -p $WORKING_DIR
           
-          # Check if we have existing Terraform files
-          if [[ -f "$WORKING_DIR/main.tf" ]] || [[ -f "$WORKING_DIR/variables.tf" ]] || [[ -f "$WORKING_DIR/outputs.tf" ]]; then
-            echo "📋 Found existing Terraform configuration, will merge/update..."
-          else
-            echo "🆕 Creating new Terraform configuration..."
-          fi
+          echo "🆕 Creating complete Terraform configuration..."
           
-          # Create/Update main.tf (always overwrite for consistency)
+          # Create main.tf
           cat > $WORKING_DIR/main.tf << 'EOF'
           terraform {
             required_version = ">= 1.0"
@@ -167,12 +162,12 @@ jobs:
               tags               = var.common_tags
               is_production      = var.is_production
             })
-            filename = "${path.module}/$ENV-deployment-info.json"
+            filename = "${path.module}/${var.environment}-deployment-info.json"
           }
 
           resource "null_resource" "deployment" {
             provisioner "local-exec" {
-              command = "echo '$ENV deployment completed - Build: ${var.build_number} - Commit: ${var.commit_sha}'"
+              command = "echo '${var.environment} deployment completed - Build: ${var.build_number} - Commit: ${var.commit_sha}'"
             }
             
             triggers = {
@@ -184,49 +179,8 @@ jobs:
           }
           EOF
 
-          # Check if variables.tf exists and merge with existing or create new
-          if [[ -f "$WORKING_DIR/variables.tf" ]]; then
-            echo "📝 Found existing variables.tf, merging with new variables..."
-            cp $WORKING_DIR/variables.tf $WORKING_DIR/variables.tf.backup
-            
-            if ! grep -q "variable \"build_number\"" $WORKING_DIR/variables.tf; then
-              cat >> $WORKING_DIR/variables.tf << 'VAREOF'
-          
-          variable "build_number" {
-            description = "Build number"
-            type        = string
-            default     = "0"
-          }
-          VAREOF
-            fi
-            
-            if ! grep -q "variable \"is_production\"" $WORKING_DIR/variables.tf; then
-              cat >> $WORKING_DIR/variables.tf << 'VAREOF'
-          
-          variable "is_production" {
-            description = "Is production environment"
-            type        = bool
-            default     = false
-          }
-          VAREOF
-            fi
-            
-            if ! grep -q "variable \"deployment_url\"" $WORKING_DIR/variables.tf; then
-              cat >> $WORKING_DIR/variables.tf << VAREOF
-          
-          variable "deployment_url" {
-            description = "Environment URL"
-            type        = string
-            default     = "${{ needs.setup.outputs.deployment_url }}"
-          }
-          VAREOF
-            fi
-            
-            echo "✅ Variables merged successfully"
-          else
-            echo "📝 Creating new variables.tf file..."
-            # Create complete variables.tf with environment-specific defaults
-            cat > $WORKING_DIR/variables.tf << NEWVAREOF
+          # Create complete variables.tf
+          cat > $WORKING_DIR/variables.tf << EOF
           variable "environment" {
             description = "Environment name"
             type        = string
@@ -285,10 +239,9 @@ jobs:
             type        = bool
             default     = ${{ needs.setup.outputs.is_production }}
           }
-          NEWVAREOF
-          fi
+          EOF
 
-          # Create/Update outputs.tf (always overwrite for consistency)
+          # Create outputs.tf
           cat > $WORKING_DIR/outputs.tf << 'EOF'
           output "environment" {
             description = "Current environment"
