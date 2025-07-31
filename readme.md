@@ -8,4 +8,3 @@ A complete CI/CD pipeline with security gates and compliance automation for Terr
 - **Compliance Automation**: Policy-as-code with OPA.
 - **GitHub Actions CI/CD**: Automated deployment pipeline.
 - **Mock AWS Resources**: development setup.
-
