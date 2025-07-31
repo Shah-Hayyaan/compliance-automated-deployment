@@ -193,6 +193,7 @@ jobs:
             # Append missing variables if they don't exist
                       if ! grep -q "variable \"build_number\"" $WORKING_DIR/variables.tf; then
               cat >> $WORKING_DIR/variables.tf << EOF
+              
 variable "build_number" {
   description = "Build number"
   type        = string
@@ -203,6 +204,7 @@ EOF
 
             if ! grep -q "variable \"is_production\"" $WORKING_DIR/variables.tf; then
               cat >> $WORKING_DIR/variables.tf << EOF
+              
 variable "is_production" {
   description = "Whether this is a production environment"
   type        = bool
