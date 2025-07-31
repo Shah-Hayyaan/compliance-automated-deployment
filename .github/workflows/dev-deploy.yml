@@ -241,48 +241,132 @@ jobs:
             ${{ env.WORKING_DIR }}/deployment-info.json
           retention-days: 90
 
-      - name: Notify UAT promotion readiness
-        run: |
-          echo "🎉 Dev deployment completed successfully!"
-          echo "📦 Deployment artifact: ${{ steps.deploy_artifact.outputs.deployment_artifact_name }}"
-          echo "🔄 This build is now ready for UAT promotion via pull request"
-          echo "📝 Create a PR from dev → uat to promote this deployment"
-
+  # AUTO-PROMOTE TO UAT
   promote-to-uat:
-    name: Prepare UAT Promotion
+    name: 🔄 Auto-promote to UAT
     runs-on: ubuntu-latest
     needs: deploy
-    if: needs.deploy.outputs.deployment_success == 'true'
+    if: needs.deploy.outputs.deployment_success == 'true' && github.event_name == 'push'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create UAT promotion branch
+      - name: Configure Git
         run: |
-          BRANCH_NAME="promote-to-uat-${{ github.sha }}-${{ github.run_number }}"
-          git checkout -b $BRANCH_NAME
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create UAT promotion pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Ensure UAT branch exists
+          if ! git show-ref --verify --quiet refs/remotes/origin/uat; then
+            echo "🌟 Creating uat branch..."
+            git checkout -b uat
+            git push -u origin uat
+            git checkout dev
+          fi
           
-          # Create a promotion file to track the deployment
-          mkdir -p .github/promotions
-          cat > .github/promotions/dev-to-uat-${{ github.run_number }}.json << EOF
-          {
-            "source_environment": "dev",
-            "target_environment": "uat", 
-            "commit_sha": "${{ github.sha }}",
-            "build_number": "${{ github.run_number }}",
-            "deployment_artifact": "${{ needs.deploy.outputs.deployment_artifact_name }}",
-            "promoted_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "promoted_by": "${{ github.actor }}",
-            "status": "ready_for_promotion"
-          }
+          # Check if PR already exists
+          EXISTING_PR=$(gh pr list --base uat --head dev --json number --jq '.[0].number' 2>/dev/null || echo "")
+          
+          if [[ -z "$EXISTING_PR" ]]; then
+            # Create promotion branch
+            PROMOTION_BRANCH="auto-promote-dev-to-uat-${{ github.run_number }}"
+            git checkout -b $PROMOTION_BRANCH dev
+            
+            # Create promotion tracking file
+            mkdir -p .github/promotions
+            cat > .github/promotions/dev-to-uat-${{ github.run_number }}.json << EOF
+            {
+              "source_environment": "dev",
+              "target_environment": "uat",
+              "commit_sha": "${{ github.sha }}",
+              "build_number": "${{ github.run_number }}",
+              "deployment_artifact": "${{ needs.deploy.outputs.deployment_artifact_name }}",
+              "promoted_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "promoted_by": "${{ github.actor }}",
+              "promotion_type": "auto",
+              "source_deployment_success": true
+            }
           EOF
-          
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add .github/promotions/
-          git commit -m "🚀 Prepare promotion: dev → uat (build ${{ github.run_number }})"
-          
-          echo "✅ Created promotion branch: $BRANCH_NAME"
-          echo "🔄 Ready to create pull request for UAT deployment"
+            
+            git add .github/promotions/
+            git commit -m "🚀 Auto-promote: dev → uat (build ${{ github.run_number }})"
+            git push origin $PROMOTION_BRANCH
+            
+            # Create pull request
+            gh pr create \
+              --base uat \
+              --head $PROMOTION_BRANCH \
+              --title "🚀 Auto-promote: dev → uat (build ${{ github.run_number }})" \
+              --body "## 🚀 Automated Dev to UAT Promotion
+              
+            This PR promotes a successful deployment from **dev** to **uat**.
+            
+            ### 📋 Deployment Details
+            - **Source Environment:** dev
+            - **Target Environment:** uat
+            - **Commit SHA:** \`${{ github.sha }}\`
+            - **Build Number:** ${{ github.run_number }}
+            - **Deployed by:** ${{ github.actor }}
+            - **Deployment Status:** ✅ Success
+            
+            ### 🔗 Related Links
+            - **Build Artifact:** ${{ needs.validate.outputs.build_artifact_name }}
+            - **Deployment Artifact:** ${{ needs.deploy.outputs.deployment_artifact_name }}
+            - **Workflow Run:** https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            - **Dev Environment:** https://dev-internal.company.local
+            
+            ### ✅ Pre-deployment Checklist
+            - [x] Source environment deployment successful
+            - [x] All tests passed
+            - [x] Build artifacts generated
+            - [x] Infrastructure validated
+            
+            ### 🎯 Post-merge Actions
+            After merging this PR:
+            1. UAT deployment will begin automatically
+            2. Enhanced security scans will run
+            3. UAT environment will be updated
+            4. Production promotion PR will be created automatically
+            
+            ---
+            *This is an automated promotion created by the Dev CI/CD pipeline.*"
+            
+            echo "✅ Created promotion PR: dev → uat"
+          else
+            echo "ℹ️ UAT promotion PR already exists: #$EXISTING_PR"
+            gh pr edit $EXISTING_PR \
+              --title "🚀 Auto-promote: dev → uat (build ${{ github.run_number }})" \
+              --body "## 🚀 Automated Dev to UAT Promotion (Updated)
+              
+            ### 📋 Latest Deployment Details
+            - **Source Environment:** dev
+            - **Target Environment:** uat
+            - **Latest Commit SHA:** \`${{ github.sha }}\`
+            - **Latest Build Number:** ${{ github.run_number }}
+            - **Last Updated by:** ${{ github.actor }}
+            - **Last Updated:** $(date)
+            - **Deployment Status:** ✅ Success
+            
+            ### 🔗 Latest Artifacts
+            - **Build Artifact:** ${{ needs.validate.outputs.build_artifact_name }}
+            - **Deployment Artifact:** ${{ needs.deploy.outputs.deployment_artifact_name }}
+            
+            ---
+            *This PR was automatically updated by the Dev CI/CD pipeline.*"
+            
+            echo "✅ Updated existing UAT promotion PR"
+          fi
+
+      - name: Summary
+        run: |
+          echo "🎉 Dev deployment completed successfully!"
+          echo "🔄 UAT promotion PR created/updated"
+          echo "👀 Review and merge the PR to deploy to UAT"
+          echo "📦 Deployment artifact: ${{ needs.deploy.outputs.deployment_artifact_name }}"
