@@ -1,4 +1,4 @@
-# Terraform Compliance Framework
+# Automation & Compliance
 
 A complete CI/CD pipeline with security gates and compliance automation for Terraform infrastructure.
 
