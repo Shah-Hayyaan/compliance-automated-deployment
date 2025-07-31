@@ -65,35 +65,120 @@ jobs:
         echo "Running gitleaks secret detection..."
         gitleaks detect --source . --verbose --exit-code 0 || true
 
+    - name: Debug Terraform files
+      run: |
+        echo "=== Debugging Terraform Configuration ==="
+        echo "Working directory: ${{ env.WORKING_DIR }}"
+        echo "Files in working directory:"
+        ls -la ${{ env.WORKING_DIR }} || echo "Working directory not found"
+        echo ""
+        echo "=== Checking outputs.tf ==="
+        if [ -f "${{ env.WORKING_DIR }}/outputs.tf" ]; then
+          echo "Content of outputs.tf:"
+          cat ${{ env.WORKING_DIR }}/outputs.tf
+        else
+          echo "outputs.tf not found"
+        fi
+        echo ""
+        echo "=== Checking for module files ==="
+        find . -name "*.tf" -type f | head -10
+        echo ""
+        echo "=== Checking module structure ==="
+        if [ -d "modules" ]; then
+          find modules -name "*.tf" -type f | head -10
+        else
+          echo "No modules directory found"
+        fi
+
     - name: Terraform Format Check
       run: |
         echo "Checking Terraform formatting..."
-        terraform fmt -check -recursive || true
+        terraform fmt -check -recursive || {
+          echo "Format check failed, showing diff:"
+          terraform fmt -diff -recursive || true
+        }
       working-directory: ${{ env.WORKING_DIR }}
 
     - name: Terraform Init
       run: |
         echo "Initializing Terraform..."
-        terraform init
+        terraform init -no-color
+      working-directory: ${{ env.WORKING_DIR }}
+
+    - name: Check module outputs
+      run: |
+        echo "=== Checking available module outputs ==="
+        echo "Listing all .tf files for module references:"
+        grep -r "module\." . --include="*.tf" || echo "No module references found"
+        echo ""
+        echo "=== Checking app_storage module ==="
+        if [ -d "modules/app_storage" ]; then
+          echo "app_storage module outputs.tf content:"
+          cat modules/app_storage/outputs.tf 2>/dev/null || echo "No outputs.tf in app_storage module"
+        elif [ -d "../modules/app_storage" ]; then
+          echo "app_storage module outputs.tf content:"
+          cat ../modules/app_storage/outputs.tf 2>/dev/null || echo "No outputs.tf in app_storage module"
+        else
+          echo "app_storage module directory not found"
+          echo "Available modules:"
+          find . -type d -name "*storage*" || echo "No storage modules found"
+        fi
       working-directory: ${{ env.WORKING_DIR }}
 
     - name: Terraform Validate
+      continue-on-error: true
+      id: validate
       run: |
         echo "Validating Terraform configuration..."
-        terraform validate
+        terraform validate -no-color 2>&1 | tee validate_output.txt
+        exit_code=${PIPESTATUS[0]}
+        echo "validation_exit_code=$exit_code" >> $GITHUB_OUTPUT
+        if [ $exit_code -ne 0 ]; then
+          echo "=== Validation failed, detailed analysis ==="
+          echo "Exit code: $exit_code"
+          cat validate_output.txt
+          echo ""
+          echo "=== Checking for common issues ==="
+          if grep -q "bucket_name" validate_output.txt; then
+            echo "Issue: bucket_name output not found in app_storage module"
+            echo "Suggestion: Check if the module has different output names"
+          fi
+        fi
+        exit $exit_code
       working-directory: ${{ env.WORKING_DIR }}
 
+    - name: Handle validation failure
+      if: steps.validate.outputs.validation_exit_code != '0'
+      run: |
+        echo "=== Terraform Validation Failed ==="
+        echo "This is likely due to missing module outputs or incorrect references."
+        echo "Common fixes:"
+        echo "1. Check if 'bucket_name' output exists in the app_storage module"
+        echo "2. Verify module source paths are correct"
+        echo "3. Ensure all required modules are present"
+        echo ""
+        echo "=== Suggested Actions ==="
+        echo "1. Review outputs.tf in your modules"
+        echo "2. Check module references in your main configuration"
+        echo "3. Verify module source paths"
+        echo ""
+        echo "Marking this step as failed to prevent deployment of invalid configuration."
+        exit 1
+
     - name: Run tfsec security scan
+      if: steps.validate.outputs.validation_exit_code == '0'
       run: |
         echo "Running tfsec security scan..."
         tfsec ${{ env.WORKING_DIR }} --format json --out tfsec-results.json --soft-fail || true
 
     - name: Run Checkov security scan
+      if: steps.validate.outputs.validation_exit_code == '0'
       run: |
         echo "Running Checkov security scan..."
         checkov -d ${{ env.WORKING_DIR }} --framework terraform --output json --output-file checkov-results.json --soft-fail || true
 
     - name: Upload security scan results
+      if: steps.validate.outputs.validation_exit_code == '0'
       uses: actions/upload-artifact@v4
       with:
         name: security-scan-results-dev
@@ -103,17 +188,28 @@ jobs:
         retention-days: 30
 
     - name: Terraform Plan
+      if: steps.validate.outputs.validation_exit_code == '0'
       run: |
         echo "Creating Terraform execution plan..."
-        terraform plan -out=tfplan -detailed-exitcode
+        terraform plan -out=tfplan -detailed-exitcode -no-color
       working-directory: ${{ env.WORKING_DIR }}
 
     - name: Upload plan
+      if: steps.validate.outputs.validation_exit_code == '0'
       uses: actions/upload-artifact@v4
       with:
         name: terraform-plan-dev
         path: ${{ env.WORKING_DIR }}/tfplan
         retention-days: 30
+
+    - name: Upload validation logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: validation-logs-dev
+        path: |
+          ${{ env.WORKING_DIR }}/validate_output.txt
+        retention-days: 7
 
   deploy:
     name: Deploy to Dev
@@ -139,13 +235,13 @@ jobs:
     - name: Terraform Init
       run: |
         echo "Initializing Terraform for deployment..."
-        terraform init
+        terraform init -no-color
       working-directory: ${{ env.WORKING_DIR }}
 
     - name: Terraform Apply
       run: |
         echo "Applying Terraform changes..."
-        terraform apply -auto-approve tfplan
+        terraform apply -auto-approve tfplan -no-color
       working-directory: ${{ env.WORKING_DIR }}
 
     - name: Generate deployment report
@@ -161,6 +257,8 @@ jobs:
         # Generate state information
         if terraform show -json > terraform-state.json 2>/dev/null; then
           echo "- ✅ State file generated successfully" >> deployment-report.md
+          resource_count=$(cat terraform-state.json | grep -o '"type"' | wc -l)
+          echo "- 📈 Total resources: $resource_count" >> deployment-report.md
         else
           echo "- ⚠️ State file generation failed" >> deployment-report.md
         fi
@@ -170,6 +268,16 @@ jobs:
         
         echo "## 📋 Summary:" >> deployment-report.md
         echo "Deployment completed at $(date) for commit ${{ github.sha }}" >> deployment-report.md
+        
+        # Add terraform output if available
+        echo "## 🔧 Terraform Outputs:" >> deployment-report.md
+        if terraform output -json > tf-outputs.json 2>/dev/null; then
+          echo '```json' >> deployment-report.md
+          cat tf-outputs.json >> deployment-report.md
+          echo '```' >> deployment-report.md
+        else
+          echo "No outputs available or outputs command failed" >> deployment-report.md
+        fi
       working-directory: ${{ env.WORKING_DIR }}
 
     - name: Upload deployment artifacts
@@ -179,6 +287,7 @@ jobs:
         path: |
           ${{ env.WORKING_DIR }}/deployment-report.md
           ${{ env.WORKING_DIR }}/terraform-state.json
+          ${{ env.WORKING_DIR }}/tf-outputs.json
         retention-days: 90
 
   cleanup:
@@ -190,3 +299,5 @@ jobs:
     - name: Clean up temporary artifacts
       run: |
         echo "Workflow completed. Temporary artifacts will be cleaned up automatically based on retention policies."
+        echo "Validation status: ${{ needs.validate.result }}"
+        echo "Deployment status: ${{ needs.deploy.result }}"
