@@ -1,0 +1,12 @@
+  {
+    "source_environment": "dev",
+    "target_environment": "uat",
+    "commit_sha": "c1589a2ba0a088e95c92d7dd863ddcd93705f2cd",
+    "build_number": "31",
+    "build_artifact": "build-artifacts-dev-c1589a2ba0a088e95c92d7dd863ddcd93705f2cd-31",
+    "deployment_artifact": "deployment-artifacts-dev-c1589a2ba0a088e95c92d7dd863ddcd93705f2cd-31",
+    "promoted_at": "2025-07-31T14:33:11Z",
+    "promoted_by": "Shah-Hayyaan",
+    "promotion_type": "auto",
+    "source_deployment_success": true
+  }
