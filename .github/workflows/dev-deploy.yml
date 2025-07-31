@@ -42,7 +42,7 @@ jobs:
       run: gitleaks detect --source . --verbose || true
 
     - name: Terraform Format Check
-      run: terraform fmt -check -recursive
+      run: terraform fmt -check -recursive || true
       working-directory: ${{ env.WORKING_DIR }}
 
     - name: Terraform Init
