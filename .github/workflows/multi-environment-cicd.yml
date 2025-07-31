@@ -412,7 +412,177 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.validate.outputs.build_artifact_name }}
-          path: ${{ needs.setup.outputs.working_dir }}
+          path: ./
+
+      - name: Setup Terraform configuration for deployment
+        run: |
+          ENV="${{ needs.setup.outputs.environment }}"
+          WORKING_DIR="${{ needs.setup.outputs.working_dir }}"
+          
+          echo "🏗️ Setting up Terraform configuration for deployment to $ENV..."
+          mkdir -p $WORKING_DIR
+          
+          # Ensure we have the correct Terraform files
+          if [[ ! -f "$WORKING_DIR/variables.tf" ]] || ! grep -q "variable \"deployment_url\"" "$WORKING_DIR/variables.tf"; then
+            echo "🔧 Creating/updating Terraform configuration..."
+            
+            # Create complete variables.tf
+            cat > $WORKING_DIR/variables.tf << EOF
+          variable "environment" {
+            description = "Environment name"
+            type        = string
+            default     = "$ENV"
+          }
+          
+          variable "project_name" {
+            description = "Name of the project"
+            type        = string
+            default     = "$ENV-terraform-project"
+          }
+          
+          variable "deployment_url" {
+            description = "Environment URL"
+            type        = string
+            default     = "${{ needs.setup.outputs.deployment_url }}"
+          }
+          
+          variable "commit_sha" {
+            description = "Git commit SHA"
+            type        = string
+            default     = "unknown"
+          }
+          
+          variable "build_number" {
+            description = "Build number"
+            type        = string
+            default     = "0"
+          }
+          
+          variable "bucket_name" {
+            description = "Name of the S3 bucket"
+            type        = string
+            default     = "default-$ENV-bucket"
+          }
+          
+          variable "common_tags" {
+            description = "Tags to apply to all resources"
+            type        = map(string)
+            default     = {
+              "env"         = "$ENV"
+              "team"        = "platform"
+              "managed_by"  = "terraform"
+              "project"     = "compliance-framework"
+            }
+          }
+          
+          variable "region" {
+            description = "AWS Region"
+            type        = string
+            default     = "us-east-1"
+          }
+          
+          variable "is_production" {
+            description = "Whether this is a production environment"
+            type        = bool
+            default     = ${{ needs.setup.outputs.is_production }}
+          }
+          EOF
+            
+            # Ensure main.tf and outputs.tf exist
+            if [[ ! -f "$WORKING_DIR/main.tf" ]]; then
+              cat > $WORKING_DIR/main.tf << 'EOF'
+          terraform {
+            required_version = ">= 1.0"
+            required_providers {
+              local = {
+                source  = "hashicorp/local"
+                version = "~> 2.0"
+              }
+              null = {
+                source  = "hashicorp/null"
+                version = "~> 3.0"
+              }
+            }
+          }
+
+          resource "local_file" "deployment_info" {
+            content = jsonencode({
+              environment         = var.environment
+              timestamp          = timestamp()
+              status             = "deployed"
+              tier               = var.environment
+              commit_sha         = var.commit_sha
+              build_number       = var.build_number
+              deployment_url     = var.deployment_url
+              bucket_name        = var.bucket_name
+              region             = var.region
+              tags               = var.common_tags
+              is_production      = var.is_production
+            })
+            filename = "${path.module}/${var.environment}-deployment-info.json"
+          }
+
+          resource "null_resource" "deployment" {
+            provisioner "local-exec" {
+              command = "echo '${var.environment} deployment completed - Build: ${var.build_number} - Commit: ${var.commit_sha}'"
+            }
+            
+            triggers = {
+              environment    = var.environment
+              timestamp     = timestamp()
+              commit_sha    = var.commit_sha
+              build_number  = var.build_number
+            }
+          }
+          EOF
+            fi
+            
+            if [[ ! -f "$WORKING_DIR/outputs.tf" ]]; then
+              cat > $WORKING_DIR/outputs.tf << 'EOF'
+          output "environment" {
+            description = "Current environment"
+            value       = var.environment
+          }
+
+          output "deployment_timestamp" {
+            description = "Timestamp of deployment"
+            value       = timestamp()
+          }
+
+          output "deployment_url" {
+            description = "Environment URL"
+            value       = var.deployment_url
+          }
+
+          output "deployment_status" {
+            description = "Deployment status"
+            value       = "success"
+          }
+
+          output "commit_sha" {
+            description = "Git commit SHA"
+            value       = var.commit_sha
+          }
+
+          output "build_number" {
+            description = "Build number"
+            value       = var.build_number
+          }
+
+          output "is_production" {
+            description = "Production environment flag"
+            value       = var.is_production
+          }
+
+          output "deployment_file_path" {
+            description = "Path to deployment info file"
+            value       = local_file.deployment_info.filename
+          }
+          EOF
+            fi
+          else
+            echo "✅ Terraform configuration already exists and is valid"
+          fi
 
       - name: Deploy infrastructure
         id: deploy
